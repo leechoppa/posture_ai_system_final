@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.streamlit/secrets.toml
+
+# 개인 측정 데이터
+data/*.csv
+
+# 용량이 큰 모델과 백업
+model/*.pkl
