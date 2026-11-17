@@ -1,0 +1,9 @@
+﻿actual,session_id,samples,correct,accuracy
+correct,7c551c49583f,121,100,82.64
+forward,9779b771ca9d,120,120,100.0
+left,31bcd5907b92,121,117,96.69
+left,88e697e301ab,120,116,96.67
+right,8bd3c740d1e0,120,89,74.17
+right,cbb63fbf9283,120,22,18.33
+right,cc64eb2b857a,120,0,0.0
+right,ed2936ec9cab,120,114,95.0

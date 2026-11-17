@@ -1,0 +1,25 @@
+{
+  "rows": 4813,
+  "sessions": 40,
+  "train_rows": 3851,
+  "test_rows": 962,
+  "test_session_ids": [
+    "7c551c49583f",
+    "9779b771ca9d",
+    "88e697e301ab",
+    "31bcd5907b92",
+    "cbb63fbf9283",
+    "ed2936ec9cab",
+    "8bd3c740d1e0",
+    "cc64eb2b857a"
+  ],
+  "accuracy": 0.7047817047817048,
+  "balanced_accuracy": 0.8155003150612119,
+  "cv_balanced_accuracy": 0.6027050811141721,
+  "best_params": {
+    "class_weight": "balanced",
+    "max_depth": null,
+    "min_samples_leaf": 2,
+    "n_estimators": 200
+  }
+}
