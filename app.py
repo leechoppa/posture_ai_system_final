@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 import math
+import json
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -13,8 +14,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_LOG = ROOT / "data" / "posture_log_v2.csv"  #웹 대시보드에 연결할 CSV 파일명
-LABELS = {"correct": "정상 자세", "forward": "구부정한 자세", "left": "왼쪽 기울임", "right": "오른쪽 기울임", "no_pressure": "압력 없음"}
+DEFAULT_LOG = ROOT / "data" / "posture_log_v2.csv"
+STATUS_FILE = ROOT / "data" / "system_status.json"
+LABELS = {"correct": "정상 자세", "forward": "구부정 자세", "left": "좌측 기울어짐", "right": "우측 기울어짐", "no_pressure": "입력 없음"}
 COLORS = {"correct": "#34c59a", "forward": "#efb45d", "left": "#8c9bff", "right": "#f18f9c", "no_pressure": "#9ca3af"}
 SENSOR_NAMES = ["fsr1", "fsr2", "fsr3", "fsr4"]
 px.defaults.template = "plotly_white"
@@ -50,6 +52,22 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-color:#E5EBF3!important;
 """, unsafe_allow_html=True)
 
 
+def read_system_status():
+    """main.py가 작성한 상태 파일을 읽는다. 오래된 값은 사용하지 않는다."""
+    if not STATUS_FILE.exists():
+        return None
+    try:
+        with STATUS_FILE.open("r", encoding="utf-8") as file:
+            state = json.load(file)
+        updated = datetime.fromisoformat(state["updated_at"])
+        age_seconds = (datetime.now() - updated).total_seconds()
+        if age_seconds < -5 or age_seconds > 5:
+            return None
+        return state
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+
+
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
     """수집기/기존 CSV의 기본 컬럼 및 자세 이름 정규화."""
     if df.empty:
@@ -69,8 +87,18 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     if "posture" not in df:
         df["posture"] = "unknown"
+    # 표시되는 자세명은 지정한 4종(+ 미착석 상태)으로 제한한다.
+    # 기타 문장이나 예기치 않은 CSV 값은 그대로 화면에 노출하지 않는다.
     df["posture"] = df["posture"].astype(str).str.strip().str.lower()
-    df["posture"] = df["posture"].replace({"normal": "correct", "good": "correct", "slouch": "forward", "정상": "correct", "구부정": "forward", "좌측": "left", "우측": "right"})
+    posture_aliases = {
+        "normal": "correct", "good": "correct", "정상": "correct", "정상 자세": "correct",
+        "slouch": "forward", "구부정": "forward", "구부정한 자세": "forward", "구부정 자세": "forward",
+        "좌측": "left", "왼쪽": "left", "왼쪽 기울임": "left", "좌측기울임": "left", "좌측 기울임": "left", "좌측 기울어짐": "left",
+        "우측": "right", "오른쪽": "right", "오른쪽 기울임": "right", "우측기울임": "right", "우측 기울임": "right", "우측 기울어짐": "right",
+        "압력 없음": "no_pressure", "미착석": "no_pressure", "입력 없음": "no_pressure",
+    }
+    df["posture"] = df["posture"].replace(posture_aliases)
+    df.loc[~df["posture"].isin(LABELS), "posture"] = "unknown"
     # main.py의 feedback_command는 0/1 정수로 저장됨.
     # 기존 serial_bridge.py의 feedback 문자열 형식도 함께 지원.
     if "feedback_command" in df:
@@ -236,7 +264,7 @@ with st.sidebar:
     st.divider()
     mode = st.radio("데이터 모드", ["실제 측정 데이터", "데모 데이터"], index=0, help="실제 데이터는 별도 실행되는 센서 수집기가 CSV에 기록합니다.")
     log_path = st.text_input("실시간 로그 CSV 경로", str(DEFAULT_LOG), disabled=mode == "데모 데이터")
-    auto = st.toggle("자동 새로고침 (3초)", value=True)
+    auto = st.toggle("자동 새로고침 (1초)", value=True)
     st.divider()
     st.markdown("**자세 상태 안내**")
     for key, label in LABELS.items():
@@ -263,6 +291,10 @@ def render_dashboard():
                 df = normalize(pd.DataFrame())
         source = "실제 CSV 기록"
 
+    system_status = read_system_status() if mode == "실제 측정 데이터" else None
+    feedback_active = bool(system_status and system_status.get("feedback_active"))
+    feedback_message = (system_status.get("message") or "피드백 동작 중") if feedback_active else ""
+
     st.markdown("<div class='hero'><div class='hero-eyebrow'>ALIGN · POSTURE INSIGHTS</div><h1>AI 자세 관리 대시보드</h1><p>실시간 자세 인식부터 자세별 통계와 불균형 분석까지 한눈에 확인하세요.</p></div>", unsafe_allow_html=True)
     left, right = st.columns([3, 1])
     with left:
@@ -271,6 +303,11 @@ def render_dashboard():
         if st.button("↻ 지금 새로고침", width="stretch"):
             st.cache_data.clear()
             st.rerun()
+
+    if feedback_active:
+        st.warning(f"🔔 **피드백 동작 중 — 자세 인식 일시 중지**  |  {feedback_message}")
+    elif system_status and system_status.get("state") == "ERROR":
+        st.error(f"피드백 오류: {system_status.get('message', '상태 확인 필요')}")
 
     if df.empty:
         st.info("표시할 데이터가 없습니다. 사이드바에서 데모 모드를 선택하여 화면을 미리 확인할 수 있습니다.")
@@ -299,18 +336,19 @@ def render_dashboard():
 
     st.markdown("#### 현재 자세 요약")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("마지막 인식 자세", current_name)
+    c1.metric("현재 상태" if feedback_active else "마지막 인식 자세",
+              "피드백 동작 중" if feedback_active else current_name)
     c2.metric("마지막 기록 자세 유지", fmt_time(hold))
     c3.metric("정상 자세 비율 (분류 관측 시간)", f"{correct_pct:.1f}%")
     c4.metric("피드백 요청 기록", f"{feedback_count}회")
 
-    if mode == "실제 측정 데이터":
+    if mode == "실제 측정 데이터" and not feedback_active:
         age = (datetime.now() - latest["timestamp"].to_pydatetime()).total_seconds()
         if 0 <= age <= 10:
             st.success("● 최근 10초 이내에 센서 로그가 기록되었습니다.")
         else:
             st.warning(f"마지막 기록: {latest['timestamp']:%Y-%m-%d %H:%M:%S} · 현재 실시간 측정이 중단되었을 수 있습니다.")
-    else:
+    elif mode == "데모 데이터":
         st.info("이 화면은 예시 데이터입니다. 실제 정확도, 실제 사용자 자세, 실시간 센서 측정값을 나타내지 않습니다.", icon="ℹ️")
 
     st.markdown("#### 자세 데이터 상세보기")
@@ -321,9 +359,12 @@ def render_dashboard():
         with a:
             with st.container(border=True):
                 st.subheader("현재 자세 상태")
-                color = COLORS.get(current_key, "#8290a2")
-                st.markdown(f"<div style='padding:20px;background:{color}18;border-radius:15px;border-left:6px solid {color}'><div style='font-size:13px;color:#66758b'>AI 분류 결과</div><div style='font-size:29px;font-weight:800;color:#17273d'>{current_name}</div><div style='font-size:13px;color:#7d889a;margin-top:5px'>기록 시각 {latest['timestamp']:%H:%M:%S}</div></div>", unsafe_allow_html=True)
-                if pd.notna(latest["confidence"]):
+                color = "#E9A342" if feedback_active else COLORS.get(current_key, "#8290a2")
+                display_name = "피드백 동작 중" if feedback_active else current_name
+                st.markdown(f"<div style='padding:20px;background:{color}18;border-radius:15px;border-left:6px solid {color}'><div style='font-size:13px;color:#66758b'>AI 분류 결과</div><div style='font-size:29px;font-weight:800;color:#17273d'>{display_name}</div><div style='font-size:13px;color:#7d889a;margin-top:5px'>기록 시각 {latest['timestamp']:%H:%M:%S}</div></div>", unsafe_allow_html=True)
+                if feedback_active:
+                    st.caption(feedback_message + " · 이 구간에는 새 자세 기록이 추가되지 않습니다.")
+                if not feedback_active and pd.notna(latest["confidence"]):
                     val = float(latest["confidence"])
                     st.caption(f"모델 예측 확률(최대 클래스): {val * 100:.1f}%" if 0 <= val <= 1 else "예측 확률: 유효하지 않은 값")
                 st.caption("예측 확률은 검증 데이터에서 측정한 모델 정확도와 다릅니다. 피드백은 실제 작동이 아닌 요청 기록입니다.")
@@ -331,7 +372,7 @@ def render_dashboard():
                 st.subheader("센서별 압력 값")
                 sensor = pd.DataFrame({"센서": ["FSR 1", "FSR 2", "FSR 3", "FSR 4"], "측정값": [latest[c] for c in SENSOR_NAMES]})
                 fig = px.bar(sensor, x="센서", y="측정값", text="측정값", color="센서", color_discrete_sequence=["#6a85db", "#7a9df0", "#95ade6", "#b0c0ee"])
-                fig.update_layout(showlegend=False, height=265, margin=dict(l=8, r=8, t=15, b=0), plot_bgcolor="white", yaxis_title="ADC 원시값", xaxis_title=None, yaxis_range=[0, 300])
+                fig.update_layout(showlegend=False, height=265, margin=dict(l=8, r=8, t=15, b=0), plot_bgcolor="white", yaxis_title="ADC 원시값", xaxis_title=None, yaxis_range=[0, 200])
                 st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
                 st.caption("센서 순서는 회로에 연결된 FSR1~4 기준입니다. ADC 0~1023 값은 직접적인 힘(N) 측정값이 아닙니다.")
         with b:
@@ -340,7 +381,7 @@ def render_dashboard():
                 recent = df.tail(120).copy()
                 pressure = recent.melt(id_vars="timestamp", value_vars=SENSOR_NAMES, var_name="센서", value_name="ADC 값")
                 fig = px.line(pressure, x="timestamp", y="ADC 값", color="센서", color_discrete_sequence=["#5371d0", "#7f9ae0", "#34b9a1", "#efa76c"])
-                fig.update_layout(height=340, margin=dict(l=8, r=8, t=18, b=0), plot_bgcolor="white", legend=dict(orientation="h", yanchor="bottom", y=1.03, x=0), xaxis_title=None, yaxis_range=[0, 300])
+                fig.update_layout(height=340, margin=dict(l=8, r=8, t=18, b=0), plot_bgcolor="white", legend=dict(orientation="h", yanchor="bottom", y=1.03, x=0), xaxis_title=None, yaxis_range=[0, 200])
                 st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
             with st.container(border=True):
                 st.subheader("최근 자세 판별")
@@ -387,7 +428,7 @@ def render_dashboard():
     with tab3:
         st.subheader("센서 및 AI 판단 기록")
         show = df.iloc[::-1].copy()
-        show["자세"] = show["posture"].map(LABELS).fillna(show["posture"])
+        show["자세"] = show["posture"].map(LABELS).fillna("미분류")
         show = show.rename(columns={"timestamp": "기록 시간", "fsr1": "FSR1", "fsr2": "FSR2", "fsr3": "FSR3", "fsr4": "FSR4", "feedback": "피드백", "confidence": "예측 확률"})
         st.dataframe(show[["기록 시간", "자세", "FSR1", "FSR2", "FSR3", "FSR4", "예측 확률", "피드백"]], width="stretch", hide_index=True, height=365)
         st.download_button("⬇ CSV 다운로드", data=df.to_csv(index=False).encode("utf-8-sig"), file_name=f"posture_history_{datetime.now():%Y%m%d_%H%M%S}.csv", mime="text/csv")
@@ -395,7 +436,7 @@ def render_dashboard():
 
 
 if auto:
-    @st.fragment(run_every="3s")
+    @st.fragment(run_every="1s")
     def live_fragment():
         render_dashboard()
     live_fragment()
